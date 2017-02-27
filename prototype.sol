@@ -6,7 +6,7 @@ contract Contract {
   //Minimum amount of ether required to participate
   uint public threshold;
   //Latest blockstamp, used to set time limit for players
-  uint lastUpdate;
+  uint private lastUpdate;
 
   //Console logs event when move is made
   event madeMove(bytes32 prefix, uint8 rowNum, bytes8 column, uint8 col);
@@ -33,16 +33,16 @@ contract Contract {
 
   /*Accounts that have paid >= threshold
    that are able to participate in the game*/
-  mapping(uint8=>Player) players;
+  mapping(uint8=>Player) private players;
 
-  uint8 num_of_players = 0;
+  uint8 private num_of_players = 0;
 
   /*Accounts that have paid < threshold, cannot
   participate in the game but funds will be returned
   when the game ends.*/
-  mapping (uint8=>Underdog) underdogs;
+  mapping (uint8=>Underdog) private underdogs;
 
-  uint8 num_of_underdogs;
+  uint8 private num_of_underdogs;
 
   modifier hasValue {
     if (msg.value > 0) {
@@ -52,37 +52,12 @@ contract Contract {
     }
   }
 
-  modifier gameFull {
-    if (num_of_players == 2) {
-      throw;
-    } else {
-      _;
-    }
-  }
-
   modifier onlyCreator {
     if (msg.sender != creator) {
       throw;
     } else {
       _;
     }
-  }
-
-  modifier noTardy {
-    if (num_of_players == 2 && now - lastUpdate > 1 hours) {
-      kickOut(turn);
-      kickedout(players[turn].playerAddress);
-    }
-    _;
-  }
-
-  function kickOut(uint8 player) private {
-    sendMoney(players[player].playerAddress, players[player].paid);
-    if (player == 1) {
-      delete players[1];
-      players[1] = copyPlayer(2);
-    }
-    delete players[2];
   }
   
   function payeeState() constant returns (uint8[2]) {
@@ -100,7 +75,6 @@ contract Contract {
   function challengerAddress() constant returns (address) {
     return players[2].playerAddress;
   }
-
 
   /*function print_board() constant returns (string) {
     bytes memory bytesRow = new bytes(32);
@@ -140,8 +114,38 @@ contract Contract {
     num_of_players += 1;
     lastUpdate = now;
   }
+
+  bool private creatorPaid = false;
+
+  modifier gameCanBegin {
+    if (!creatorPaid) {
+      throw;
+    } else {
+      _;
+    }
+  }
+
+  function creatorPay() payable onlyCreator hasValue {
+    if (creatorPaid) {
+      throw;
+    } else {
+      players[1].paid = msg.value;
+      threshold = msg.value * uint(11) / uint(10);
+      creatorPaid = true;
+    }
+  }
   
-  function challengerJoin() public noTardy payable hasValue gameFull {
+  /** Challenger joins. */
+  function challengerJoin() public payable hasValue gameCanBegin {
+    if (num_of_players == 2 && now - lastUpdate > 1 hours + 15 minutes) {
+      if (turn == 1) {
+        reset(2);
+      } else {
+        reset(1);
+      }
+    } else if (num_of_players == 2) {
+      throw;
+    }
     if (msg.value < threshold) {
       underdogs[num_of_underdogs] = Underdog({
         returnAddress: msg.sender,
@@ -154,25 +158,26 @@ contract Contract {
         paid: msg.value,
         payback: 0
       });
+      lastUpdate = now;
       num_of_players += 1;
     }
   }
 
   /** Game Part */
   //Virtual representation of the game board
-  uint8[3][3] board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  uint8[3][3] private board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   //Determine player's turn: 1 is payee, 2 is challenger
-  uint8 turn = 1;
+  uint8 private turn = 1;
   //Token of winner
-  uint8 winner = 0;
+  uint8 private winner = 0;
 
   function makeMove(uint8 _row, uint8 _col) public {
     if (_row > 3 || _col > 3 || players[turn].playerAddress != msg.sender
-      || board[_row - 1][_col - 1] != 0) {
+      || board[_row - 1][_col - 1] != 0 || num_of_players != 2) {
       throw;
     } else {
       board[_row - 1][_col - 1] = turn;
-      lastUpdate = block.timestamp;
+      lastUpdate = now;
       if (turn == 1) {
           madeMove("Payee--row: ", _row, "column: ", _col);
       } else {
@@ -181,7 +186,18 @@ contract Contract {
       row_1(board[0]);
       row_2(board[1]);
       row_3(board[2]);
+      bool gameOver = true;
+      for (uint8 i = 0; i < 3; i++) {
+        for (uint8 j = 0; j < 3; j++) {
+          if (board[i][j] == 0) {
+            gameOver = false;
+          }
+        }
+      }
       checkWinner();
+      if (gameOver) {
+        reset(2);
+      }
       changeTurn();
     }
   }
@@ -200,10 +216,38 @@ contract Contract {
 
   event sentMoney(address player, uint amount);
 
+  function withdraw() public {
+    if (msg.sender == players[1].playerAddress) {
+      reset(2);
+    } else if (msg.sender == players[2].playerAddress) {
+      reset(1);
+    } else {
+      for (uint8 i = 0; i < num_of_underdogs; i += 1) {
+        if (underdogs[i].returnAddress == msg.sender) {
+          sendMoney(msg.sender, underdogs[i].amount);
+        }
+      }
+    }
+  }
+
   function sendMoney(address _recipient, uint _amount) private {
     if (!_recipient.send(_amount)) {
+      for (uint8 i = 0; i < num_of_underdogs; i += 1) {
+        if (underdogs[i].returnAddress == _recipient) {
+          throw;
+        }
+      }
+      underdogs[num_of_underdogs] = Underdog({
+        returnAddress: _recipient,
+        amount: _amount
+      });
       throw;
     } else {
+      for (uint8 j = 0; j < num_of_underdogs; j += 1) {
+        if (underdogs[j].returnAddress == _recipient) {
+          delete underdogs[j];
+        }
+      }
       sentMoney(_recipient, _amount);
     }
   }
@@ -222,7 +266,7 @@ contract Contract {
   function reset(uint8 winner) private {
     //If payee wins
     if (winner == 1) {
-      players[1].payback = players[2].paid - players[1].paid;
+      players[1].payback = players[2].paid - players[1].paid + players[1].paid;
       sendMoney(players[1].playerAddress, players[1].payback);
     } else {  //if challenger wins
       sendMoney(players[1].playerAddress, players[1].paid);
