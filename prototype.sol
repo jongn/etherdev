@@ -19,13 +19,14 @@ contract Contract {
 
   event kickedout(address player);
 
-  //A complex type that represents a player
+  // Struct that represents a player
   struct Player {
     address playerAddress;
     uint paid;
     uint payback;
   }
 
+  // Struct that represents someone that didn't pay enough
   struct Underdog {
     address returnAddress;
     uint amount;
@@ -137,6 +138,11 @@ contract Contract {
   
   /** Challenger joins. */
   function challengerJoin() public payable hasValue gameCanBegin {
+  
+    // Use 1.25 hrs because internal time in block can be altered by the miner, up to 15 minutes.
+    // This makes the players safe from the miner attempting to time them out at 45 minutes.
+    // Change in time become an annoyance rather than a malicious attack.
+    
     if (num_of_players == 2 && now - lastUpdate > 1 hours + 15 minutes) {
       if (turn == 1) {
         reset(2);
